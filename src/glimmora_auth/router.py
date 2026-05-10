@@ -15,6 +15,7 @@ from glimmora_auth.config import AuthConfig
 from glimmora_auth.dependencies import get_db
 from glimmora_auth.emailer import generate_reset_expiry, generate_reset_token, generate_verification_token, generate_verification_expiry
 from glimmora_auth.models import AuthUser, PasswordReset, RefreshToken, EmailVerificationToken
+from glimmora_auth.ratelimit import rate_limit_dependency
 from glimmora_auth.security import (
     create_access_token,
     create_refresh_token,
@@ -172,9 +173,11 @@ def _password_is_strong(password: str) -> bool:
 
 @router.post("/register", status_code=201, response_model=RegisterResponse)
 async def register(
+    request: Request,
     body: RegisterRequest,
     db: AsyncSession = Depends(get_db),
     config: AuthConfig = Depends(_get_config),
+    _: None = Depends(rate_limit_dependency),
 ):
     User = _get_user_model()
     if not _password_is_strong(body.password):
@@ -242,9 +245,11 @@ async def register(
 
 @router.post("/login", response_model=TokenResponse)
 async def login(
+    request: Request,
     body: LoginRequest,
     db: AsyncSession = Depends(get_db),
     config: AuthConfig = Depends(_get_config),
+    _: None = Depends(rate_limit_dependency),
 ):
     User = _get_user_model()
     result = await db.execute(select(User).where(User.email == body.email))
@@ -291,9 +296,11 @@ async def login(
 
 @router.post("/refresh", response_model=TokenResponse)
 async def refresh(
+    request: Request,
     body: RefreshRequest,
     db: AsyncSession = Depends(get_db),
     config: AuthConfig = Depends(_get_config),
+    _: None = Depends(rate_limit_dependency),
 ):
     payload = decode_token(body.refresh_token, config.jwt_secret, config.jwt_algorithm)
     if not payload or payload.get("type") != "refresh":
@@ -413,9 +420,11 @@ async def change_password(
 
 @router.post("/forgot-password")
 async def forgot_password(
+    request: Request,
     body: ForgotPasswordRequest,
     db: AsyncSession = Depends(get_db),
     config: AuthConfig = Depends(_get_config),
+    _: None = Depends(rate_limit_dependency),
 ):
     # Always return 200 to prevent email enumeration
     result = await db.execute(select(AuthUser).where(AuthUser.email == body.email))
@@ -529,9 +538,11 @@ async def verify_email(
 
 @router.post("/resend-verification")
 async def resend_verification(
+    request: Request,
     body: ResendVerificationRequest,
     db: AsyncSession = Depends(get_db),
     config: AuthConfig = Depends(_get_config),
+    _: None = Depends(rate_limit_dependency),
 ):
     """Resend email verification token. Always returns 200 to prevent email enumeration."""
     result = await db.execute(select(AuthUser).where(AuthUser.email == body.email))

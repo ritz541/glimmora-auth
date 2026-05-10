@@ -30,6 +30,7 @@ def setup_auth(
     on_login: Optional[Callable] = None,
     send_reset_email: Optional[Callable] = None,
     send_verification_email: Optional[Callable] = None,
+    rate_limits: Optional[dict] = None,
     **kwargs,
 ):
     """Set up auth on a FastAPI app. Registers all /auth/* endpoints.
@@ -46,6 +47,9 @@ def setup_auth(
         on_login: Async callback(user, db) called after successful login.
         send_reset_email: Async callback(user, token) called to send password reset email.
         send_verification_email: Async callback(user, token) called to send email verification.
+        rate_limits: Dict of endpoint -> "count/period" for rate limiting.
+            Default: register=5/hour, login=10/minute, forgot-password=3/hour,
+            resend-verification=3/hour, refresh=10/minute. Pass {} to disable.
         **kwargs: Additional config options (jwt_algorithm, access_token_expire_minutes, etc.)
     """
     config = AuthConfig(jwt_secret=jwt_secret, **kwargs)
@@ -137,6 +141,13 @@ def setup_auth(
 
     app.include_router(target_router)
 
+    # Set up rate limiting if configured
+    if rate_limits:
+        from glimmora_auth.ratelimit import DEFAULT_RATE_LIMITS
+
+        effective = {**DEFAULT_RATE_LIMITS, **rate_limits}
+        app.state._auth_rate_limits = effective
+
 
 def _filter_router(
     source: APIRouter,
@@ -197,4 +208,5 @@ __all__ = [
     "hash_token",
     "oauth2_scheme",
     "cleanup_expired_tokens",
+    "rate_limit_dependency",
 ]
