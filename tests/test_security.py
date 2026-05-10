@@ -1,5 +1,6 @@
 """Tests for glimmora_auth.security module."""
 
+import logging
 import time
 from datetime import timedelta
 
@@ -11,7 +12,7 @@ from glimmora_auth.security import (
     decode_token,
 )
 
-SECRET = "test-secret-key"
+SECRET = "test-secret-key-for-testing-only-32chars"
 
 
 def test_hash_password_returns_hash():
@@ -103,3 +104,30 @@ def test_refresh_token_has_refresh_type():
     assert payload is not None
     assert payload["type"] == "refresh"
     assert payload["sub"] == "1"
+
+
+def test_hash_password_no_passlib_warnings(caplog):
+    """hash_password/verify_password should not emit passlib warnings.
+
+    Regression test: passlib + bcrypt>=4.1 logs a trapped error about
+    bcrypt.__about__ being removed. This test ensures no such noise.
+    """
+    import io
+    import sys
+    import importlib
+
+    # The trapped error fires at CryptContext() init (module import time).
+    # We must do a fresh import while logging is captured.
+    for key in list(sys.modules):
+        if "glimmora_auth" in key or "passlib" in key:
+            sys.modules.pop(key, None)
+
+    with caplog.at_level(logging.WARNING):
+        mod = importlib.import_module("glimmora_auth.security")
+        _ = mod.hash_password("StrongPass123!")
+        mod.verify_password("StrongPass123!", _)
+
+    assert "trapped" not in caplog.text, (
+        f"passlib emitted warnings during import. "
+        f"Run with -s to see details. Captured: {caplog.text[:500]}"
+    )

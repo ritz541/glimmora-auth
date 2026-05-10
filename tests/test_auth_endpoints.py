@@ -360,7 +360,7 @@ class TestResetPassword:
     async def test_reset_password(self, client: AsyncClient, db_session):
         """Register user, generate reset token, reset password."""
         from glimmora_auth.models import AuthUser, PasswordReset
-        from glimmora_auth.security import hash_password
+        from glimmora_auth.security import hash_password, hash_token
         from glimmora_auth.emailer import generate_reset_token, generate_reset_expiry
 
         # Create user directly (commit so other sessions can see it)
@@ -373,17 +373,17 @@ class TestResetPassword:
         await db_session.commit()
         await db_session.refresh(user)
 
-        # Create reset token
+        # Create reset token — store hashed, keep plain for API call
         token = generate_reset_token()
         reset = PasswordReset(
-            token=token,
+            token=hash_token(token),
             user_id=user.id,
             expires_at=generate_reset_expiry(),
         )
         db_session.add(reset)
         await db_session.commit()
 
-        # Reset password
+        # Reset password using the plain token (endpoint hashes it internally)
         resp = await client.post("/auth/reset-password", json={
             "token": token,
             "new_password": "BrandNew123!",
@@ -407,7 +407,7 @@ class TestResetPassword:
     async def test_reset_password_expired_token(self, client: AsyncClient, db_session):
         """Expired reset token should be rejected."""
         from glimmora_auth.models import AuthUser, PasswordReset
-        from glimmora_auth.security import hash_password
+        from glimmora_auth.security import hash_password, hash_token
         from datetime import datetime, timedelta, timezone
 
         user = AuthUser(
@@ -419,9 +419,10 @@ class TestResetPassword:
         await db_session.commit()
         await db_session.refresh(user)
 
-        # Expired token
+        # Expired token — store hashed, use matching plain token for API call
+        token = "expired-token-123"
         reset = PasswordReset(
-            token="expired-token-123",
+            token=hash_token(token),
             user_id=user.id,
             expires_at=datetime.now(timezone.utc) - timedelta(hours=1),
         )
@@ -429,7 +430,7 @@ class TestResetPassword:
         await db_session.commit()
 
         resp = await client.post("/auth/reset-password", json={
-            "token": "***",
+            "token": token,
             "new_password": "NewPass123!",
         })
         assert resp.status_code == 400
@@ -454,7 +455,7 @@ class TestResetPassword:
         # Create a refresh token for the user
         refresh_str = create_refresh_token(
             data={"sub": str(user.id)},
-            secret="test-secret-key-for-testing-only",
+            secret="test-secret-key-for-testing-only-32chars",
             expires_delta=timedelta(days=7),
         )
         db_session.add(RefreshToken(
@@ -463,10 +464,10 @@ class TestResetPassword:
             expires_at=datetime.now(timezone.utc) + timedelta(days=7),
         ))
 
-        # Create reset token
+        # Create reset token — store hashed
         token = generate_reset_token()
         reset = PasswordReset(
-            token=token,
+            token=hash_token(token),
             user_id=user.id,
             expires_at=generate_reset_expiry(),
         )
@@ -485,3 +486,447 @@ class TestResetPassword:
             "refresh_token": refresh_str,
         })
         assert resp2.status_code == 401
+
+
+# ============================================================
+# EMAIL VERIFICATION
+# ============================================================
+
+class TestEmailVerification:
+    async def test_verify_email_success(self, client, db_session):
+        """Create unverified user with token, verify via endpoint."""
+        from glimmora_auth.models import AuthUser, EmailVerificationToken
+        from glimmora_auth.security import hash_password, hash_token
+        from glimmora_auth.emailer import generate_verification_token, generate_verification_expiry
+
+        user = AuthUser(
+            email="verify-me@example.com",
+            hashed_password=hash_password("TestPass123!"),
+            full_name="Verify Me",
+        )
+        db_session.add(user)
+        await db_session.commit()
+        await db_session.refresh(user)
+
+        token = generate_verification_token()
+        verification = EmailVerificationToken(
+            token=hash_token(token),
+            user_id=user.id,
+            expires_at=generate_verification_expiry(hours=24),
+        )
+        db_session.add(verification)
+        await db_session.commit()
+
+        resp = await client.post("/auth/verify-email", json={"token": token})
+        assert resp.status_code == 200
+        assert resp.json()["message"] == "Email verified successfully"
+
+        # User should now be verified in DB
+        await db_session.refresh(user)
+        assert user.is_verified is True
+
+        # Reusing the same token should fail
+        resp2 = await client.post("/auth/verify-email", json={"token": token})
+        assert resp2.status_code == 400
+        assert "already used" in resp2.json()["detail"].lower()
+
+    async def test_verify_email_invalid_token(self, client):
+        resp = await client.post("/auth/verify-email", json={"token": "nonexistent-token"})
+        assert resp.status_code == 400
+        assert "invalid" in resp.json()["detail"].lower() or "already used" in resp.json()["detail"].lower()
+
+    async def test_verify_email_expired_token(self, client, db_session):
+        """Expired verification token should be rejected."""
+        from glimmora_auth.models import AuthUser, EmailVerificationToken
+        from glimmora_auth.security import hash_password, hash_token
+        from datetime import datetime, timedelta, timezone
+
+        user = AuthUser(
+            email="expired-verify@example.com",
+            hashed_password=hash_password("TestPass123!"),
+            full_name="Expired Verify",
+        )
+        db_session.add(user)
+        await db_session.commit()
+        await db_session.refresh(user)
+
+        token = "expired-verify-token"
+        verification = EmailVerificationToken(
+            token=hash_token(token),
+            user_id=user.id,
+            expires_at=datetime.now(timezone.utc) - timedelta(hours=1),
+        )
+        db_session.add(verification)
+        await db_session.commit()
+
+        resp = await client.post("/auth/verify-email", json={"token": token})
+        assert resp.status_code == 400
+        assert "expired" in resp.json()["detail"].lower()
+
+    async def test_resend_verification(self, client, db_session):
+        """Resend verification for an unverified user."""
+        from glimmora_auth.models import AuthUser
+        from glimmora_auth.security import hash_password
+
+        user = AuthUser(
+            email="resend-me@example.com",
+            hashed_password=hash_password("TestPass123!"),
+            full_name="Resend Me",
+            is_verified=False,
+        )
+        db_session.add(user)
+        await db_session.commit()
+
+        resp = await client.post("/auth/resend-verification", json={"email": "resend-me@example.com"})
+        assert resp.status_code == 200
+
+    async def test_resend_verification_unknown_email(self, client):
+        """Should return 200 even for unknown emails (prevent enumeration)."""
+        resp = await client.post("/auth/resend-verification", json={"email": "nobody@example.com"})
+        assert resp.status_code == 200
+
+    async def test_resend_verification_already_verified(self, client, db_session):
+        """Should return 200 but do nothing for already verified users."""
+        from glimmora_auth.models import AuthUser
+        from glimmora_auth.security import hash_password
+
+        user = AuthUser(
+            email="already-verified@example.com",
+            hashed_password=hash_password("TestPass123!"),
+            full_name="Already Verified",
+            is_verified=True,
+        )
+        db_session.add(user)
+        await db_session.commit()
+
+        resp = await client.post("/auth/resend-verification", json={"email": "already-verified@example.com"})
+        assert resp.status_code == 200
+
+
+# ============================================================
+# EVENT HOOKS
+# ============================================================
+
+class TestEventHooks:
+    async def test_on_register_hook(self):
+        """on_register callback should fire when user registers."""
+        from fastapi import FastAPI
+        from glimmora_auth import setup_auth
+        from glimmora_auth.models import Base
+        from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+
+        hook_called = False
+        captured_user = None
+
+        async def my_on_register(user, db):
+            nonlocal hook_called, captured_user
+            hook_called = True
+            captured_user = user
+
+        app = FastAPI()
+        setup_auth(
+            app,
+            database_url="sqlite+aiosqlite:///:memory:",
+            jwt_secret="test-secret-key-for-testing-only-32chars",
+            on_register=my_on_register,
+        )
+
+        # Create tables manually — in-memory SQLite means lifespan engine
+        # and request engine are separate connections with separate DBs
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+        from glimmora_auth.dependencies import get_db
+
+        async def override_get_db():
+            async with factory() as session:
+                async with session.begin():
+                    yield session
+
+        app.dependency_overrides[get_db] = override_get_db
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as cl:
+            resp = await cl.post("/auth/register", json={
+                "email": "hooktest@example.com",
+                "password": "TestPass123!",
+            })
+            assert resp.status_code == 201
+            assert hook_called, "on_register hook was not called"
+            assert captured_user is not None
+            assert captured_user.email == "hooktest@example.com"
+
+    async def test_on_login_hook(self):
+        """on_login callback should fire on successful login."""
+        from fastapi import FastAPI
+        from glimmora_auth import setup_auth
+        from glimmora_auth.models import Base
+        from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+
+        hook_called = False
+        captured_user = None
+
+        async def my_on_login(user, db):
+            nonlocal hook_called, captured_user
+            hook_called = True
+            captured_user = user
+
+        app = FastAPI()
+        setup_auth(
+            app,
+            database_url="sqlite+aiosqlite:///:memory:",
+            jwt_secret="test-secret-key-for-testing-only-32chars",
+            on_login=my_on_login,
+        )
+
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+        from glimmora_auth.dependencies import get_db
+
+        async def override_get_db():
+            async with factory() as session:
+                async with session.begin():
+                    yield session
+
+        app.dependency_overrides[get_db] = override_get_db
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as cl:
+            await cl.post("/auth/register", json={
+                "email": "loginhook@example.com",
+                "password": "TestPass123!",
+            })
+            resp = await cl.post("/auth/login", json={
+                "email": "loginhook@example.com",
+                "password": "TestPass123!",
+            })
+            assert resp.status_code == 200
+            assert hook_called, "on_login hook was not called"
+            assert captured_user is not None
+            assert captured_user.email == "loginhook@example.com"
+
+    async def test_send_reset_email_hook(self):
+        """send_reset_email callback should fire on forgot-password."""
+        from fastapi import FastAPI
+        from glimmora_auth import setup_auth
+        from glimmora_auth.models import Base
+        from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+
+        hook_called = False
+        captured_token = None
+
+        async def my_send_reset(user, token):
+            nonlocal hook_called, captured_token
+            hook_called = True
+            captured_token = token
+
+        app = FastAPI()
+        setup_auth(
+            app,
+            database_url="sqlite+aiosqlite:///:memory:",
+            jwt_secret="test-secret-key-for-testing-only-32chars",
+            send_reset_email=my_send_reset,
+        )
+
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+        from glimmora_auth.dependencies import get_db
+
+        async def override_get_db():
+            async with factory() as session:
+                async with session.begin():
+                    yield session
+
+        app.dependency_overrides[get_db] = override_get_db
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as cl:
+            await cl.post("/auth/register", json={
+                "email": "resethook@example.com",
+                "password": "TestPass123!",
+            })
+            resp = await cl.post("/auth/forgot-password", json={
+                "email": "resethook@example.com",
+            })
+            assert resp.status_code == 200
+            assert hook_called, "send_reset_email hook was not called"
+            assert captured_token is not None
+            assert len(captured_token) > 0
+
+    async def test_send_verification_email_hook(self):
+        """send_verification_email callback should fire on register with require_email_verification."""
+        from fastapi import FastAPI
+        from glimmora_auth import setup_auth
+        from glimmora_auth.models import Base
+        from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+
+        hook_called = False
+        captured_token = None
+
+        async def my_send_verification(user, token):
+            nonlocal hook_called, captured_token
+            hook_called = True
+            captured_token = token
+
+        app = FastAPI()
+        setup_auth(
+            app,
+            database_url="sqlite+aiosqlite:///:memory:",
+            jwt_secret="test-secret-key-for-testing-only-32chars",
+            require_email_verification=True,
+            send_verification_email=my_send_verification,
+        )
+
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+        from glimmora_auth.dependencies import get_db
+
+        async def override_get_db():
+            async with factory() as session:
+                async with session.begin():
+                    yield session
+
+        app.dependency_overrides[get_db] = override_get_db
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as cl:
+            resp = await cl.post("/auth/register", json={
+                "email": "verifhook@example.com",
+                "password": "TestPass123!",
+            })
+            assert resp.status_code == 201
+            assert hook_called, "send_verification_email hook was not called"
+            assert captured_token is not None
+            assert len(captured_token) > 0
+
+    async def test_hooks_noop_when_not_configured(self, client, registered_user):
+        """Hooks should be no-ops when not passed to setup_auth."""
+        # Just verify the standard flow works without hooks
+        resp = await client.post("/auth/login", json={
+            "email": registered_user["email"],
+            "password": registered_user["password"],
+        })
+        assert resp.status_code == 200
+
+
+# ============================================================
+# INCLUDE / EXCLUDE ENDPOINTS
+# ============================================================
+
+async def _count_routes_by_path(app):
+    """Return set of endpoint names (e.g. 'register', 'login') registered under /auth/."""
+    paths = set()
+    for route in app.router.routes:
+        if hasattr(route, "path"):
+            path = route.path.strip("/")
+            # /auth/register -> parts ['auth', 'register'] -> 'register'
+            parts = path.split("/")
+            if len(parts) >= 2 and parts[-2] == "auth":
+                paths.add(parts[-1])
+    return paths
+
+
+class TestEndpointFiltering:
+    async def test_include_only_register(self):
+        """When include_endpoints=['register'], only /auth/register should exist."""
+        from fastapi import FastAPI
+        from glimmora_auth import setup_auth
+
+        app = FastAPI()
+        setup_auth(
+            app,
+            database_url="sqlite+aiosqlite:///:memory:",
+            jwt_secret="test-secret-key-for-testing-only",
+            access_token_expire_minutes=30,
+            include_endpoints=["register"],
+        )
+
+        paths = await _count_routes_by_path(app)
+        assert paths == {"register"}, f"Expected only 'register', got {paths}"
+
+    async def test_include_multiple(self):
+        """include_endpoints can specify multiple endpoints."""
+        from fastapi import FastAPI
+        from glimmora_auth import setup_auth
+
+        app = FastAPI()
+        setup_auth(
+            app,
+            database_url="sqlite+aiosqlite:///:memory:",
+            jwt_secret="test-secret-key-for-testing-only",
+            include_endpoints=["register", "login"],
+        )
+
+        paths = await _count_routes_by_path(app)
+        assert "register" in paths
+        assert "login" in paths
+        assert "logout" not in paths
+        assert "me" not in paths
+
+    async def test_exclude_forgot_password(self):
+        """When exclude_endpoints=['forgot-password'], that endpoint should not exist."""
+        from fastapi import FastAPI
+        from glimmora_auth import setup_auth
+
+        app = FastAPI()
+        setup_auth(
+            app,
+            database_url="sqlite+aiosqlite:///:memory:",
+            jwt_secret="test-secret-key-for-testing-only",
+            exclude_endpoints=["forgot-password"],
+        )
+
+        paths = await _count_routes_by_path(app)
+        assert "forgot-password" not in paths
+        assert "register" in paths  # other endpoints still present
+
+    async def test_exclude_multiple(self):
+        """Excluding multiple endpoints works."""
+        from fastapi import FastAPI
+        from glimmora_auth import setup_auth
+
+        app = FastAPI()
+        setup_auth(
+            app,
+            database_url="sqlite+aiosqlite:///:memory:",
+            jwt_secret="test-secret-key-for-testing-only",
+            exclude_endpoints=["register", "login", "logout", "refresh", "me",
+                                "change-password", "forgot-password", "reset-password",
+                                "verify-email", "resend-verification"],
+        )
+
+        paths = await _count_routes_by_path(app)
+        assert len(paths) == 0, f"Expected 0 routes, got {paths}"
+
+    async def test_include_and_exclude_together(self):
+        """When both include and exclude are set, both filters apply.
+
+        Include narrows to the listed endpoints, then exclude removes from that set.
+        """
+        from fastapi import FastAPI
+        from glimmora_auth import setup_auth
+
+        app = FastAPI()
+        setup_auth(
+            app,
+            database_url="sqlite+aiosqlite:///:memory:",
+            jwt_secret="test-secret-key-for-testing-only",
+            include_endpoints=["register", "login", "me"],
+            exclude_endpoints=["login"],
+        )
+
+        paths = await _count_routes_by_path(app)
+        assert "register" in paths
+        assert "login" not in paths  # removed by exclude
+        assert "me" in paths
