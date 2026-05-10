@@ -12,14 +12,6 @@ class AuthConfig(BaseSettings):
     access_token_expire_minutes: int = 30
     refresh_token_expire_days: int = 7
 
-    # Email (optional - for password reset)
-    smtp_host: str = ""
-    smtp_port: int = 587
-    smtp_user: str = ""
-    smtp_password: str = ""
-    from_email: str = "noreply@example.com"
-    from_name: str = "App"
-
     # Email verification
     require_email_verification: bool = False
     verification_token_expire_hours: int = 24
