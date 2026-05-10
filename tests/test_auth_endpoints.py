@@ -45,6 +45,15 @@ class TestRegister:
         })
         assert resp.status_code == 422
 
+    async def test_register_password_too_long(self, client: AsyncClient):
+        """Password >72 bytes should be rejected (bcrypt truncation)."""
+        resp = await client.post("/auth/register", json={
+            "email": "longpw@example.com",
+            "password": "A" * 80 + "bcd123!",  # 80 * 'A' = 80 bytes, plus rest
+            "full_name": "Long PW User",
+        })
+        assert resp.status_code == 422
+
     async def test_register_missing_email(self, client: AsyncClient):
         resp = await client.post("/auth/register", json={
             "password": "TestPass123!",
@@ -101,6 +110,54 @@ class TestLogin:
             "password": "Whatever123!",
         })
         assert resp.status_code == 401
+
+    async def test_login_unverified_blocked(self):
+        """Login should be blocked when require_email_verification is set
+        and user's email is not verified."""
+        from fastapi import FastAPI
+        from glimmora_auth import setup_auth
+        from glimmora_auth.models import Base
+        from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+        from glimmora_auth.dependencies import get_db
+        from httpx import ASGITransport, AsyncClient
+
+        app = FastAPI()
+        setup_auth(
+            app,
+            database_url="sqlite+aiosqlite:///:memory:",
+            jwt_secret="test-secret-key-for-testing-only-32chars",
+            require_email_verification=True,
+            rate_limits={},
+        )
+
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+        async def override_get_db():
+            async with factory() as session:
+                async with session.begin():
+                    yield session
+
+        app.dependency_overrides[get_db] = override_get_db
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as cl:
+            # Register — creates unverified user + verification token
+            reg = await cl.post("/auth/register", json={
+                "email": "unverified@example.com",
+                "password": "TestPass123!",
+            })
+            assert reg.status_code == 201
+
+            # Login should be blocked
+            login = await cl.post("/auth/login", json={
+                "email": "unverified@example.com",
+                "password": "TestPass123!",
+            })
+            assert login.status_code == 403
+            assert "not verified" in login.json()["detail"].lower()
 
 
 # ============================================================
@@ -629,6 +686,7 @@ class TestEventHooks:
             database_url="sqlite+aiosqlite:///:memory:",
             jwt_secret="test-secret-key-for-testing-only-32chars",
             on_register=my_on_register,
+            rate_limits={},
         )
 
         # Create tables manually — in-memory SQLite means lifespan engine
@@ -679,6 +737,7 @@ class TestEventHooks:
             database_url="sqlite+aiosqlite:///:memory:",
             jwt_secret="test-secret-key-for-testing-only-32chars",
             on_login=my_on_login,
+            rate_limits={},
         )
 
         engine = create_async_engine("sqlite+aiosqlite:///:memory:")
@@ -731,6 +790,7 @@ class TestEventHooks:
             database_url="sqlite+aiosqlite:///:memory:",
             jwt_secret="test-secret-key-for-testing-only-32chars",
             send_reset_email=my_send_reset,
+            rate_limits={},
         )
 
         engine = create_async_engine("sqlite+aiosqlite:///:memory:")
@@ -783,6 +843,7 @@ class TestEventHooks:
             jwt_secret="test-secret-key-for-testing-only-32chars",
             require_email_verification=True,
             send_verification_email=my_send_verification,
+            rate_limits={},
         )
 
         engine = create_async_engine("sqlite+aiosqlite:///:memory:")

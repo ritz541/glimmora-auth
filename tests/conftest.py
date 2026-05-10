@@ -50,6 +50,7 @@ async def app(db_engine):
         jwt_secret="test-secret-key-for-testing-only",
         access_token_expire_minutes=30,
         refresh_token_expire_days=7,
+        rate_limits={},  # Disable rate limiting for test suite
     )
 
     app.dependency_overrides[get_db] = override_get_db

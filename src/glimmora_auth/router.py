@@ -1,11 +1,9 @@
 """Auth API router with all endpoints."""
 
 import logging
-import secrets
-import uuid
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.security import OAuth2PasswordBearer
 from pydantic import BaseModel, EmailStr, Field, field_validator
 from sqlalchemy import select, update
@@ -29,7 +27,11 @@ logger = logging.getLogger("glimmora_auth")
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
-# OpenAPI security scheme — makes Swagger UI show the Authorize button
+# OpenAPI security scheme — makes Swagger UI show the Authorize button.
+# Note: /auth/login expects JSON (email+password), but Swagger's Authorize
+# button sends form-encoded (username+password). Use the /auth/login form
+# in Swagger directly, or add a form-compatible alias. The Authorize button
+# in Swagger UI will not work out of the box.
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
 
@@ -155,8 +157,15 @@ COMMON_PASSWORDS={
 
 
 def _password_is_strong(password: str) -> bool:
-    """Password strength check: 8+ chars, upper, lower, digit, special, not common."""
-    if len(password) < 8:
+    """Password strength check: 8-72 chars, upper, lower, digit, special, not common.
+
+    Upper bound: bcrypt truncates at 72 bytes, so longer passwords
+    are rejected to avoid the silent-truncation footgun.
+    """
+    password_bytes = password.encode("utf-8")
+    if len(password_bytes) < 8:
+        return False
+    if len(password_bytes) > 72:
         return False
     if password.lower() in COMMON_PASSWORDS:
         return False
@@ -260,6 +269,10 @@ async def login(
     if not user.is_active:
         raise HTTPException(status_code=403, detail="Account is deactivated")
 
+    # Enforce email verification if configured
+    if config.require_email_verification and not user.is_verified:
+        raise HTTPException(status_code=403, detail="Email not verified")
+
     access_token = create_access_token(
         data={"sub": str(user.id), "email": user.email},
         secret=config.jwt_secret,
@@ -304,9 +317,13 @@ async def refresh(
         raise HTTPException(status_code=401, detail="Invalid refresh token")
 
     # Look up token in DB (including revoked, for reuse detection)
+    # WITH FOR UPDATE serializes concurrent refresh calls, preventing
+    # races where two requests pass the revoked check simultaneously.
     token_hash = hash_token(body.refresh_token)
     result = await db.execute(
-        select(RefreshToken).where(RefreshToken.token == token_hash)
+        select(RefreshToken)
+        .where(RefreshToken.token == token_hash)
+        .with_for_update()
     )
     db_token = result.scalar_one_or_none()
 
@@ -423,7 +440,8 @@ async def forgot_password(
     _: None = Depends(rate_limit_dependency),
 ):
     # Always return 200 to prevent email enumeration
-    result = await db.execute(select(AuthUser).where(AuthUser.email == body.email))
+    UserModel = _get_user_model()
+    result = await db.execute(select(UserModel).where(UserModel.email == body.email))
     user = result.scalar_one_or_none()
 
     if user:
@@ -438,7 +456,7 @@ async def forgot_password(
         reset = PasswordReset(
             token=hash_token(token),
             user_id=user.id,
-            expires_at=generate_reset_expiry(hours=1),
+            expires_at=generate_reset_expiry(hours=config.password_reset_token_expire_minutes // 60),
         )
         db.add(reset)
         await db.flush()
@@ -475,7 +493,8 @@ async def reset_password(
         raise HTTPException(status_code=422, detail="New password too weak. Need 8+ chars with upper, lower, digit, and special character.")
 
     # Update user password
-    user_result = await db.execute(select(AuthUser).where(AuthUser.id == reset.user_id))
+    UserModel = _get_user_model()
+    user_result = await db.execute(select(UserModel).where(UserModel.id == reset.user_id))
     user = user_result.scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=400, detail="User not found")
@@ -520,7 +539,8 @@ async def verify_email(
         raise HTTPException(status_code=400, detail="Verification token expired")
 
     # Mark user as verified
-    user_result = await db.execute(select(AuthUser).where(AuthUser.id == verification.user_id))
+    UserModel = _get_user_model()
+    user_result = await db.execute(select(UserModel).where(UserModel.id == verification.user_id))
     user = user_result.scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=400, detail="User not found")
@@ -540,7 +560,8 @@ async def resend_verification(
     _: None = Depends(rate_limit_dependency),
 ):
     """Resend email verification token. Always returns 200 to prevent email enumeration."""
-    result = await db.execute(select(AuthUser).where(AuthUser.email == body.email))
+    UserModel = _get_user_model()
+    result = await db.execute(select(UserModel).where(UserModel.email == body.email))
     user = result.scalar_one_or_none()
 
     if user and not user.is_verified:

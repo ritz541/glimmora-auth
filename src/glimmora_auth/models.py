@@ -34,6 +34,9 @@ class GUID(TypeDecorator):
     def process_result_value(self, value, dialect):
         if value is None:
             return value
+        # PostgreSQL already returns uuid.UUID — pass it through
+        if isinstance(value, uuid.UUID):
+            return value
         return uuid.UUID(value)
 
 
@@ -63,7 +66,7 @@ class RefreshToken(Base):
 
     id = Column(GUID, primary_key=True, default=uuid.uuid4)
     token = Column(String(512), unique=True, nullable=False, index=True)
-    user_id = Column(GUID, ForeignKey("auth_users.id", ondelete="CASCADE"), nullable=False)
+    user_id = Column(GUID, ForeignKey("auth_users.id", ondelete="CASCADE"), nullable=False, index=True)
     expires_at = Column(DateTime(timezone=True), nullable=False)
     created_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False)
     revoked = Column(Boolean, default=False, nullable=False)

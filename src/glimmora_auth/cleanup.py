@@ -33,10 +33,12 @@ async def cleanup_expired_tokens(db: AsyncSession) -> dict:
         execution_options=_SYNC_OFF,
     )
 
-    # Delete expired or used password reset tokens
+    # Delete expired or used password reset tokens.
+    # Only delete expired tokens — keep used records for audit trail
+    # (post-incident analysis, e.g. "who reset their password last week?").
     result2 = await db.execute(
         delete(PasswordReset).where(
-            or_(PasswordReset.expires_at < now, PasswordReset.used == True)
+            PasswordReset.expires_at < now
         ),
         execution_options=_SYNC_OFF,
     )

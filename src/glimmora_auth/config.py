@@ -11,6 +11,7 @@ class AuthConfig(BaseSettings):
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 30
     refresh_token_expire_days: int = 7
+    password_reset_token_expire_minutes: int = 60
 
     # Email verification
     require_email_verification: bool = False

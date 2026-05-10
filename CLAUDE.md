@@ -24,6 +24,7 @@ src/glimmora_auth/
 - **Hashed storage**: Refresh tokens are stored as SHA-256 hashes in the DB. Password reset and verification tokens are **also stored as SHA-256 hashes** (same hashing). Only the plaintext token is passed to the send-email callbacks.
 - **Stateless access tokens**: Access tokens (JWTs) are not stored server-side. They are validated purely by signature + expiry. This means logout and password-change only invalidate refresh tokens — the access token remains valid until its TTL (default: 30 min). This is standard JWT behavior; consider short TTLs to limit exposure.
 - **Rate limiting**: In-memory sliding window per IP. Default limits: register=5/hr, login=10/min, forgot-password=3/hr, resend-verification=3/hr, refresh=10/min. Disable with `rate_limits={}` or pass custom dict. No external dependencies.
+- **Email enumeration on /register**: Unlike /forgot-password, /register returns 409 for duplicate emails to inform users. If your deployment is security-sensitive, consider proxying register through a non-enumerating wrapper.
 
 ## setup_auth() Usage
 

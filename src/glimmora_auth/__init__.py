@@ -16,6 +16,7 @@ from glimmora_auth.router import _set_user_model as _router_set_user_model
 from glimmora_auth.security import decode_token, hash_token
 
 from glimmora_auth.cleanup import cleanup_expired_tokens
+from glimmora_auth.ratelimit import rate_limit_dependency
 
 
 def setup_auth(
@@ -31,6 +32,7 @@ def setup_auth(
     send_reset_email: Optional[Callable] = None,
     send_verification_email: Optional[Callable] = None,
     rate_limits: Optional[dict] = None,
+    auto_create_tables: bool = True,
     **kwargs,
 ):
     """Set up auth on a FastAPI app. Registers all /auth/* endpoints.
@@ -50,6 +52,8 @@ def setup_auth(
         rate_limits: Dict of endpoint -> "count/period" for rate limiting.
             Default: register=5/hour, login=10/minute, forgot-password=3/hour,
             resend-verification=3/hour, refresh=10/minute. Pass {} to disable.
+        auto_create_tables: Run create_all on startup (default True).
+            Set False when using Alembic in production.
         **kwargs: Additional config options (jwt_algorithm, access_token_expire_minutes, etc.)
     """
     config = AuthConfig(jwt_secret=jwt_secret, **kwargs)
@@ -87,8 +91,9 @@ def setup_auth(
 
     @asynccontextmanager
     async def lifespan_with_db(app_instance):
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
+        if auto_create_tables:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
         if original_lifespan:
             async with original_lifespan(app_instance):
                 yield
@@ -141,11 +146,20 @@ def setup_auth(
 
     app.include_router(target_router)
 
-    # Set up rate limiting if configured
-    if rate_limits:
-        from glimmora_auth.ratelimit import DEFAULT_RATE_LIMITS
+    # Set up rate limiting with sensible defaults
+    from glimmora_auth.ratelimit import DEFAULT_RATE_LIMITS
 
+    if rate_limits is None:
+        # Use defaults
+        effective = DEFAULT_RATE_LIMITS
+    elif rate_limits == {}:
+        # Explicitly disabled — don't set _auth_rate_limits at all
+        effective = None
+    else:
+        # User overrides merged with defaults
         effective = {**DEFAULT_RATE_LIMITS, **rate_limits}
+
+    if effective is not None:
         app.state._auth_rate_limits = effective
 
 
