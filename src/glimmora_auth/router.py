@@ -5,7 +5,7 @@ import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from pydantic import BaseModel, EmailStr, Field, field_validator
 from sqlalchemy import select, update
@@ -173,7 +173,6 @@ def _password_is_strong(password: str) -> bool:
 
 @router.post("/register", status_code=201, response_model=RegisterResponse)
 async def register(
-    request: Request,
     body: RegisterRequest,
     db: AsyncSession = Depends(get_db),
     config: AuthConfig = Depends(_get_config),
@@ -245,7 +244,6 @@ async def register(
 
 @router.post("/login", response_model=TokenResponse)
 async def login(
-    request: Request,
     body: LoginRequest,
     db: AsyncSession = Depends(get_db),
     config: AuthConfig = Depends(_get_config),
@@ -296,7 +294,6 @@ async def login(
 
 @router.post("/refresh", response_model=TokenResponse)
 async def refresh(
-    request: Request,
     body: RefreshRequest,
     db: AsyncSession = Depends(get_db),
     config: AuthConfig = Depends(_get_config),
@@ -420,7 +417,6 @@ async def change_password(
 
 @router.post("/forgot-password")
 async def forgot_password(
-    request: Request,
     body: ForgotPasswordRequest,
     db: AsyncSession = Depends(get_db),
     config: AuthConfig = Depends(_get_config),
@@ -538,7 +534,6 @@ async def verify_email(
 
 @router.post("/resend-verification")
 async def resend_verification(
-    request: Request,
     body: ResendVerificationRequest,
     db: AsyncSession = Depends(get_db),
     config: AuthConfig = Depends(_get_config),

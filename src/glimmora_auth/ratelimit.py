@@ -2,8 +2,8 @@
 
 import asyncio
 import time
-from collections import defaultdict
-from typing import Dict, List
+from collections import defaultdict, deque
+from typing import Dict
 
 from fastapi import HTTPException, Request, status
 
@@ -12,11 +12,19 @@ class _SlidingWindowCounter:
     """In-memory sliding window rate limiter.
 
     Thread-safe via asyncio.Lock. Entries are pruned on each check.
-    No external dependencies — fully self-contained.
+    Uses collections.deque for O(1) head removal.
+
+    Design notes:
+    - Per-process: each uvicorn/gunicorn worker gets its own counter.
+      Effective limits are multiplied by the number of workers.
+      For multi-worker deployments, consider a shared backend (Redis).
+    - IP-based: uses request.client.host directly. Behind a reverse proxy,
+      this will always be the proxy's IP unless the ASGI server is
+      configured to pass X-Forwarded-For.
     """
 
     def __init__(self) -> None:
-        self._windows: Dict[str, List[float]] = defaultdict(list)
+        self._windows: Dict[str, deque] = defaultdict(deque)
         self._lock = asyncio.Lock()
 
     async def check(self, key: str, max_requests: int, window_seconds: float) -> bool:
@@ -33,7 +41,7 @@ class _SlidingWindowCounter:
             timestamps = self._windows[key]
             # Prune expired entries
             while timestamps and timestamps[0] < cutoff:
-                timestamps.pop(0)
+                timestamps.popleft()
 
             if len(timestamps) >= max_requests:
                 return False
