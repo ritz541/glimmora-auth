@@ -21,7 +21,8 @@ src/glimmora_auth/
 - **GUID type**: Platform-independent UUID primary keys. Uses PostgreSQL UUID natively, falls back to String(36) on SQLite. Defined in `models.py` as `GUID(TypeDecorator)`.
 - **Sentinel dependencies**: `_get_current_user`, `_get_config`, `_get_user_model` are placeholder functions that raise `NotImplementedError`. `setup_auth()` overrides them via `dependency_overrides` and module-level globals.
 - **Token rotation**: Refresh tokens are single-use. On `/auth/refresh`, the old token is revoked and a new one issued. Reuse of a revoked token triggers "reuse detection" and revokes ALL tokens for that user.
-- **Hashed storage**: Refresh tokens are stored as SHA-256 hashes in the DB. Password reset and verification tokens are stored plaintext (they're one-time-use and short-lived).
+- **Hashed storage**: Refresh tokens are stored as SHA-256 hashes in the DB. Password reset and verification tokens are **also stored as SHA-256 hashes** (same hashing). Only the plaintext token is passed to the send-email callbacks.
+- **Stateless access tokens**: Access tokens (JWTs) are not stored server-side. They are validated purely by signature + expiry. This means logout and password-change only invalidate refresh tokens — the access token remains valid until its TTL (default: 30 min). This is standard JWT behavior; consider short TTLs to limit exposure.
 
 ## setup_auth() Usage
 
