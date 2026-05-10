@@ -163,4 +163,3 @@ All config can be set via env vars with prefix `GLIMMORA_AUTH_`:
 - `GLIMMORA_AUTH_REQUIRE_EMAIL_VERIFICATION` (default: false)
 - `GLIMMORA_AUTH_VERIFICATION_TOKEN_EXPIRE_HOURS` (default: 24)
 - `GLIMMORA_AUTH_BASE_URL` (default: http://localhost:8000)
-- `GLIMMORA_AUTH_SMTP_HOST`, `_PORT`, `_USER`, `_PASSWORD`, `_FROM_EMAIL`, `_FROM_NAME`
