@@ -197,14 +197,14 @@ async def register(
     if config.require_email_verification:
         token = generate_verification_token()
         verification = EmailVerificationToken(
-            token=token,
+            token=hash_token(token),
             user_id=user.id,
             expires_at=generate_verification_expiry(hours=config.verification_token_expire_hours),
         )
         db.add(verification)
         await db.flush()
 
-        # Event hook: send_verification_email
+        # Event hook: send_verification_email (pass plain token to callback)
         if getattr(config, "send_verification_email", None):
             await config.send_verification_email(user, token)
 
@@ -326,7 +326,8 @@ async def refresh(
         raise HTTPException(status_code=401, detail="Refresh token expired")
 
     # Get user
-    user_result = await db.execute(select(AuthUser).where(AuthUser.id == payload["sub"]))
+    UserModel = _get_user_model()
+    user_result = await db.execute(select(UserModel).where(UserModel.id == payload["sub"]))
     user = user_result.scalar_one_or_none()
     if not user or not user.is_active:
         raise HTTPException(status_code=401, detail="User not found or deactivated")
@@ -430,14 +431,14 @@ async def forgot_password(
 
         token = generate_reset_token()
         reset = PasswordReset(
-            token=token,
+            token=hash_token(token),
             user_id=user.id,
             expires_at=generate_reset_expiry(hours=1),
         )
         db.add(reset)
         await db.flush()
 
-        # Event hook: send_reset_email
+        # Event hook: send_reset_email (pass plain token to callback)
         if getattr(config, "send_reset_email", None):
             await config.send_reset_email(user, token)
 
@@ -450,9 +451,10 @@ async def reset_password(
     db: AsyncSession = Depends(get_db),
     config: AuthConfig = Depends(_get_config),
 ):
+    token_hash = hash_token(body.token)
     result = await db.execute(
         select(PasswordReset).where(
-            PasswordReset.token == body.token,
+            PasswordReset.token == token_hash,
             PasswordReset.used == False,
         )
     )
@@ -497,9 +499,10 @@ async def verify_email(
     config: AuthConfig = Depends(_get_config),
 ):
     """Verify a user's email address using the token from the verification email."""
+    token_hash = hash_token(body.token)
     result = await db.execute(
         select(EmailVerificationToken).where(
-            EmailVerificationToken.token == body.token,
+            EmailVerificationToken.token == token_hash,
             EmailVerificationToken.used == False,
         )
     )
@@ -544,14 +547,14 @@ async def resend_verification(
 
         token = generate_verification_token()
         verification = EmailVerificationToken(
-            token=token,
+            token=hash_token(token),
             user_id=user.id,
             expires_at=generate_verification_expiry(hours=config.verification_token_expire_hours),
         )
         db.add(verification)
         await db.flush()
 
-        # Event hook: send_verification_email
+        # Event hook: send_verification_email (pass plain token to callback)
         if getattr(config, "send_verification_email", None):
             await config.send_verification_email(user, token)
 

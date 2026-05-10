@@ -174,8 +174,13 @@ def _filter_router(
                 methods=list(methods),
                 **{k: v for k, v in route.__dict__.items()
                    if k in ("response_model", "status_code", "tags", "summary",
-                            "description", "responses", "name", "dependencies")}
-                   and v is not None,
+                            "description", "responses", "name", "dependencies",
+                            "response_model_exclude_unset", "response_model_exclude_defaults",
+                            "response_model_exclude_none", "response_model_include",
+                            "response_model_exclude", "response_model_by_alias",
+                            "response_description", "deprecated", "operation_id",
+                            "include_in_schema", "openapi_extra")
+                     and v is not None},
             )
 
     return filtered
